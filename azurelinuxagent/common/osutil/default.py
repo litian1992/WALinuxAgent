@@ -545,6 +545,16 @@ class DefaultOSUtil(object):
                 time.sleep(1)
         return False
 
+    def is_mod_available(self, mod_name: str):
+            """
+        Checks if the given module is available.
+        """
+        ret = shellutil.run(f"modinfo {mod_name}", chk_err=False)
+        if ret != 0:
+            return False
+        else:
+            return True
+
     def mount(self, device, mount_point, option=None, chk_err=True):
         if not option:
             option = []

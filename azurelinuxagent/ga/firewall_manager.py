@@ -28,6 +28,7 @@ from azurelinuxagent.common.utils import shellutil
 from azurelinuxagent.common.future import ustr
 from azurelinuxagent.common.utils.flexible_version import FlexibleVersion
 from azurelinuxagent.common.utils.shellutil import CommandError
+from azurelinuxagent.common.osutil import get_osutil
 
 
 class FirewallManagerNotAvailableError(Exception):
@@ -57,6 +58,7 @@ class FirewallManager(object):
     """
     def __init__(self, wire_server_address):
         self._wire_server_address = wire_server_address
+        self._osutil = get_osutil()
 
     # Friendly names for the firewall rules
     ACCEPT_DNS = "ACCEPT DNS"
@@ -165,6 +167,9 @@ class _FirewallManagerMultipleRules(FirewallManager):
 
     def remove_legacy_rule(self):
         check_command = self._get_legacy_rule_command(self._get_check_command_option())
+        if check_command is None:
+            logger.info("No legacy firewall rule to remove")
+            return
         try:
             shellutil.run_command(check_command)
         except CommandError as e:
@@ -216,10 +221,20 @@ class _FirewallManagerMultipleRules(FirewallManager):
 
         IMPORTANT: The order in which these rules are returned is critical, since rules are appended sequentially.
                    The first item in the array will be at the top of the chain, etc.
+
+        Note: Commands that return None (e.g., when required kernel modules are unavailable) are skipped.
         """
-        yield FirewallManager.ACCEPT_DNS, self._get_accept_dns_rule_command(command_option)
-        yield FirewallManager.ACCEPT, self._get_accept_rule_command(command_option)
-        yield FirewallManager.DROP, self._get_drop_rule_command(command_option)
+        dns_command = self._get_accept_dns_rule_command(command_option)
+        if dns_command is not None:
+            yield FirewallManager.ACCEPT_DNS, dns_command
+
+        accept_command = self._get_accept_rule_command(command_option)
+        if accept_command is not None:
+            yield FirewallManager.ACCEPT, accept_command
+
+        drop_command = self._get_drop_rule_command(command_option)
+        if drop_command is not None:
+            yield FirewallManager.DROP, drop_command
 
     def _get_accept_dns_rule_command(self, command_option):
         """
@@ -328,16 +343,19 @@ class IpTables(_FirewallManagerMultipleRules):
         return self._base_command + [command_option, "OUTPUT", "-d", self._wire_server_address, "-p", "tcp", "--destination-port", "53", "-j", "ACCEPT"]
 
     def _get_accept_rule_command(self, command_option):
-        return self._base_command + [command_option, "OUTPUT", "-d", self._wire_server_address, "-p", "tcp", "-m", "owner", "--uid-owner", str(os.getuid()), "-j", "ACCEPT"]
+        if self._osutil.is_mod_available("xt_owner"):
+            return self._base_command + [command_option, "OUTPUT", "-d", self._wire_server_address, "-p", "tcp", "-m", "owner", "--uid-owner", str(os.getuid()), "-j", "ACCEPT"]
 
     def _get_drop_rule_command(self, command_option):
-        return self._base_command + [command_option, "OUTPUT", "-d", self._wire_server_address, "-p", "tcp", "-m", "conntrack", "--ctstate", "INVALID,NEW", "-j", "DROP"]
+        if self._osutil.is_mod_available("xt_conntrack"):
+            return self._base_command + [command_option, "OUTPUT", "-d", self._wire_server_address, "-p", "tcp", "-m", "conntrack", "--ctstate", "INVALID,NEW", "-j", "DROP"]
 
     def _get_legacy_rule_command(self, command_option):
         # There was a rule change at 2.2.26, which started dropping non-root traffic to WireServer. The previous rule allowed traffic, and needs to be removed
         # for the newer DROP rule to have any effect. This function returns the command to manipulate the legacy rule that was added <= 2.2.25. Until 2.2.25
         # has aged out, keep this cleanup in place.
-        return self._base_command + [command_option, "OUTPUT", "-d", self._wire_server_address, "-p", "tcp", "-m", "conntrack", "--ctstate", "INVALID,NEW", "-j", "ACCEPT"]
+        if self._osutil.is_mod_available("xt_conntrack"):
+            return self._base_command + [command_option, "OUTPUT", "-d", self._wire_server_address, "-p", "tcp", "-m", "conntrack", "--ctstate", "INVALID,NEW", "-j", "ACCEPT"]
 
     def _get_append_command_option(self):
         return "-A"
@@ -374,10 +392,12 @@ class FirewallCmd(_FirewallManagerMultipleRules):
         return ["firewall-cmd", "--permanent", "--direct", command_option, "ipv4", "-t", "security", "-A", "OUTPUT", "-d", self._wire_server_address, "-p", "tcp", '--destination-port', '53', '-j', 'ACCEPT']
 
     def _get_accept_rule_command(self, command_option):
-        return ["firewall-cmd", "--permanent", "--direct", command_option, "ipv4", "-t", "security", "-A", "OUTPUT", "-d", self._wire_server_address, "-p", "tcp", "-m", "owner", "--uid-owner", str(os.getuid()), "-j", "ACCEPT"]
+        if self._osutil.is_mod_available("xt_owner"):
+            return ["firewall-cmd", "--permanent", "--direct", command_option, "ipv4", "-t", "security", "-A", "OUTPUT", "-d", self._wire_server_address, "-p", "tcp", "-m", "owner", "--uid-owner", str(os.getuid()), "-j", "ACCEPT"]
 
     def _get_drop_rule_command(self, command_option):
-        return ["firewall-cmd", "--permanent", "--direct", command_option, "ipv4", "-t", "security", "-A", "OUTPUT", "-d", self._wire_server_address, "-p", "tcp", "-m", "conntrack", "--ctstate", "INVALID,NEW", "-j", "DROP"]
+        if self._osutil.is_mod_available("xt_conntrack"):
+            return ["firewall-cmd", "--permanent", "--direct", command_option, "ipv4", "-t", "security", "-A", "OUTPUT", "-d", self._wire_server_address, "-p", "tcp", "-m", "conntrack", "--ctstate", "INVALID,NEW", "-j", "DROP"]
 
     def _get_legacy_rule_command(self, command_option):
         # Agents <= 2.7.0.6 inserted (-I) the rule to accept DNS traffic; later agents changed that to append (-A) the rule.

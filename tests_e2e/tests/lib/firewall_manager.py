@@ -8,6 +8,7 @@ from typing import Callable, Dict, List
 
 from azurelinuxagent.common.utils import shellutil
 from azurelinuxagent.common.utils.shellutil import CommandError
+from azurelinuxagent.common.osutil import get_osutil
 from tests_e2e.tests.lib.logging import log
 
 
@@ -33,6 +34,7 @@ class FirewallManager:
 
     def __init__(self):
         self._wire_server_address = get_wireserver_ip()
+        self._osutil = get_osutil()
 
     FIREWALL_PERIOD = 30
 
@@ -133,6 +135,8 @@ class _IpTablesFirewalldManager(FirewallManager):
         missing = []
 
         for name, get_command in self._commands.items():
+            if get_command is None:
+                continue
             try:
                 command_option = self._get_check_command_option()
                 self._log_and_run_command(get_command(command_option))
@@ -194,10 +198,12 @@ class IpTables(_IpTablesFirewalldManager):
         return f"sudo iptables -w -t security {command_option} OUTPUT -d {self._wire_server_address} -p tcp --destination-port 53 -j ACCEPT"
 
     def _get_accept_command(self, command_option: str) -> str:
-        return f"sudo iptables -w -t security {command_option} OUTPUT -d {self._wire_server_address} -p tcp -m owner --uid-owner 0 -j ACCEPT"
+        if self._osutil.is_mod_available("xt_owner"):
+            return f"sudo iptables -w -t security {command_option} OUTPUT -d {self._wire_server_address} -p tcp -m owner --uid-owner 0 -j ACCEPT"
 
     def _get_accept_drop_command(self, command_option: str) -> str:
-        return f"sudo iptables -w -t security {command_option} OUTPUT -d {self._wire_server_address} -p tcp -m conntrack --ctstate INVALID,NEW -j DROP"
+        if self._osutil.is_mod_available("xt_conntrack"):
+            return f"sudo iptables -w -t security {command_option} OUTPUT -d {self._wire_server_address} -p tcp -m conntrack --ctstate INVALID,NEW -j DROP"
 
 
 class Firewalld(_IpTablesFirewalldManager):
@@ -231,10 +237,12 @@ class Firewalld(_IpTablesFirewalldManager):
         return f"firewall-cmd --permanent --direct {command_option} ipv4 -t security -A OUTPUT -d {self._wire_server_address} -p tcp --destination-port 53 -j ACCEPT"
 
     def _get_accept_command(self, command_option: str) -> str:
-        return f"firewall-cmd --permanent --direct {command_option} ipv4 -t security -A OUTPUT -d {self._wire_server_address} -p tcp -m owner --uid-owner 0 -j ACCEPT"
+        if self._osutil.is_mod_available("xt_owner"):
+            return f"firewall-cmd --permanent --direct {command_option} ipv4 -t security -A OUTPUT -d {self._wire_server_address} -p tcp -m owner --uid-owner 0 -j ACCEPT"
 
     def _get_accept_drop_command(self, command_option: str) -> str:
-        return f"firewall-cmd --permanent --direct {command_option} ipv4 -t security -A OUTPUT -d {self._wire_server_address} -p tcp -m conntrack --ctstate INVALID,NEW -j DROP"
+        if self._osutil.is_mod_available("xt_conntrack"):
+            return f"firewall-cmd --permanent --direct {command_option} ipv4 -t security -A OUTPUT -d {self._wire_server_address} -p tcp -m conntrack --ctstate INVALID,NEW -j DROP"
 
 
 class NfTables(FirewallManager):

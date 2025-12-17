@@ -18,6 +18,7 @@ import os
 import re
 
 from azurelinuxagent.common.utils import shellutil
+from azurelinuxagent.common.osutil import get_osutil
 from tests.lib.tools import patch
 
 class _MockFirewallCommand(object):
@@ -27,6 +28,7 @@ class _MockFirewallCommand(object):
     Intercepts calls to shellutil.run_command and mocks the behavior of the firewall command-line utilities using a pre-defined set of return values.
     """
     def __init__(self, command_name, check_option, add_option, delete_option):
+        self._osutil = get_osutil()
         self._command_name = command_name
         self._check_option = check_option
         self._add_option = add_option
@@ -167,15 +169,18 @@ class MockIpTables(_MockFirewallCommand):
 
     @staticmethod
     def get_accept_command(option):
-        return "iptables -w -t security {0} OUTPUT -d 168.63.129.16 -p tcp -m owner --uid-owner {1} -j ACCEPT".format(option, os.getuid())
+        if self._osutil.is_mod_available("xt_owner"):
+            return "iptables -w -t security {0} OUTPUT -d 168.63.129.16 -p tcp -m owner --uid-owner {1} -j ACCEPT".format(option, os.getuid())
 
     @staticmethod
     def get_drop_command(option):
-        return "iptables -w -t security {0} OUTPUT -d 168.63.129.16 -p tcp -m conntrack --ctstate INVALID,NEW -j DROP".format(option)
+        if self._osutil.is_mod_available("xt_conntrack"):
+            return "iptables -w -t security {0} OUTPUT -d 168.63.129.16 -p tcp -m conntrack --ctstate INVALID,NEW -j DROP".format(option)
 
     @staticmethod
     def get_legacy_command(option):
-        return "iptables -w -t security {0} OUTPUT -d 168.63.129.16 -p tcp -m conntrack --ctstate INVALID,NEW -j ACCEPT".format(option)
+        if self._osutil.is_mod_available("xt_conntrack"):
+            return "iptables -w -t security {0} OUTPUT -d 168.63.129.16 -p tcp -m conntrack --ctstate INVALID,NEW -j ACCEPT".format(option)
 
 
 class MockFirewallCmd(_MockFirewallCommand):
@@ -222,11 +227,13 @@ class MockFirewallCmd(_MockFirewallCommand):
 
     @staticmethod
     def get_accept_command(option):
-        return "firewall-cmd --permanent --direct {0} ipv4 -t security -A OUTPUT -d 168.63.129.16 -p tcp -m owner --uid-owner {1} -j ACCEPT".format(option, os.getuid())
+        if self._osutil.is_mod_available("xt_owner"):
+            return "firewall-cmd --permanent --direct {0} ipv4 -t security -A OUTPUT -d 168.63.129.16 -p tcp -m owner --uid-owner {1} -j ACCEPT".format(option, os.getuid())
 
     @staticmethod
     def get_drop_command(option):
-        return "firewall-cmd --permanent --direct {0} ipv4 -t security -A OUTPUT -d 168.63.129.16 -p tcp -m conntrack --ctstate INVALID,NEW -j DROP".format(option)
+        if self._osutil.is_mod_available("xt_conntrack"):
+            return "firewall-cmd --permanent --direct {0} ipv4 -t security -A OUTPUT -d 168.63.129.16 -p tcp -m conntrack --ctstate INVALID,NEW -j DROP".format(option)
 
     @staticmethod
     def get_legacy_command(option):
